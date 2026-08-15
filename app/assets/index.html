@@ -195,14 +195,16 @@ function runBacktest(P) {
           trades.push([i, c, 'sell', shares, execP, comm]);
         }
         for (const c in pos) if (!pos[c].shares) delete pos[c];
-        // 后买
-        const wSum = Object.values(pending).reduce((a,b)=>a+b, 0);
-        if (wSum > 0) for (const [c, w] of Object.entries(pending).sort()) {
+        // 后买：预算按"尚未成交的买单权重"分配（否则最后一只永远买不满）
+        const remW = {}; for (const [c, w] of Object.entries(pending)) if (w > 0) remW[c] = w;
+        for (const [c, w] of Object.entries(pending).sort()) {
           if (w <= 0) continue;
-          const price = D.open[c][i]; if (price == null) continue;
+          const price = D.open[c][i]; if (price == null) { delete remW[c]; continue; }
           const held = pos[c] ? pos[c].shares * price : 0;
-          const alloc = total * w - held; if (alloc < 500) continue;
-          const budget = Math.min(alloc, cash * w / wSum);
+          const alloc = total * w - held; if (alloc < 500) { delete remW[c]; continue; }
+          const remSum = Object.values(remW).reduce((a,b)=>a+b, 0);
+          const budget = Math.min(alloc, cash * w / remSum);
+          delete remW[c];
           let shares = Math.floor(budget / price / 100) * 100; if (shares <= 0) continue;
           const execP = price * (1 + P.slippage);
           let comm = Math.max(shares * execP * P.commRate, P.minComm);

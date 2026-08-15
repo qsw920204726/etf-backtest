@@ -97,8 +97,10 @@ class Broker:
         portfolio.cleanup()
 
         # ---- 买入 ----
-        buy_weight_sum = sum(w for w in targets.values())
-        if buy_weight_sum <= 0:
+        # 预算按"尚未成交的买单权重"分配：排在前面的买单成交后，
+        # 剩余现金对后面的买单不再打折（否则最后一只永远买不满，产生数周补仓单）
+        remaining_weights = {c: w for c, w in sorted(targets.items()) if w > 0}
+        if not remaining_weights or sum(remaining_weights.values()) <= 0:
             return
         for code, weight in sorted(targets.items()):
             if weight <= 0:
@@ -110,9 +112,12 @@ class Broker:
             held_value = (pos.shares * price) if pos else 0.0
             alloc_value = total_value * weight - held_value
             if alloc_value < self.config.min_trade_value:
+                remaining_weights.pop(code, None)
                 continue
-            # 预算受当前现金约束（按权重比例预留其他买单）
-            budget = min(alloc_value, portfolio.cash * weight / buy_weight_sum)
+            # 本单可动用的现金份额 = 现金 × 本单权重 / 未成交买单权重之和
+            remaining_sum = sum(remaining_weights.values())
+            budget = min(alloc_value, portfolio.cash * weight / remaining_sum)
+            remaining_weights.pop(code, None)
             shares = math.floor(budget / price / 100) * 100
             if shares <= 0:
                 continue
