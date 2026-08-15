@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+data_cache/
+reports/
+*.png
+*.log
+app/build/
+app/keystore.jks
