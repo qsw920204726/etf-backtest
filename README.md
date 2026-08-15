@@ -72,6 +72,15 @@ sweep.py             参数网格扫描 + IS/OOS 样本外验证
 继承 `strategies/base.Strategy`，实现 `on_bar(date, portfolio_value)`：
 返回 `None` 不动；返回 `{code: weight}` 次日开盘调仓；返回 `{}` 清仓持币。
 
+## 安卓 App（离线回测）
+
+- 安装包：仓库根目录 `ETF回测.apk`（约460KB），传到手机点击安装（需允许"未知来源应用"）
+- **完全离线**：内置全部历史数据快照 + JS 移植版引擎（与 Python 版同口径：T+1开盘成交、
+  佣金万2.5、100股取整、周频/月频动量、风险调整、绝对动量过滤）
+- 功能：今日操作信号（卖出/持有/买入 + 按资金算建议股数）、KPI、净值/回撤图、交易明细
+- 联网时点「更新数据」可直接从东财拉最新行情（失败自动回退内置快照）
+- 数据快照更新：电脑端跑 `py export_mobile_data.py` 后 `bash app/build_apk.sh` 重新打包
+
 ## Web 报告页
 
 `py -m uvicorn api.main:app --port 8321` 后浏览器打开 http://127.0.0.1:8321 —— 
