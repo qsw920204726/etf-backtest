@@ -19,6 +19,9 @@ public class MainActivity extends Activity {
         WebSettings s = wv.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        // 允许 asset 页面跨域拉取行情数据（东财/腾讯接口），否则 fetch 被 WebView 拦截
+        s.setAllowFileAccessFromFileURLs(true);
+        s.setAllowUniversalAccessFromFileURLs(true);
         wv.setWebChromeClient(new WebChromeClient());
         wv.setWebViewClient(new WebViewClient());
         wv.loadUrl("file:///android_asset/index.html");

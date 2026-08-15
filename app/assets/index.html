@@ -421,39 +421,84 @@ $('refreshBtn').onclick = async () => {
   toast('正在更新数据…', 10000);
   try {
     const secid = c => (c.startsWith('5') ? '1.' : '0.') + c;
-    const fetchK = async (c, fqt) => {
-      const u = `https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1,f2&fields2=f51,f52,f53&klt=101&fqt=${fqt}&secid=${secid(c)}&beg=0&end=20500101&ut=7eea3edcaed734bea9cbfc24409ed989`;
-      const j = await (await fetch(u)).json();
-      return j.data && j.data.klines ? j.data.klines.map(x => x.split(',')) : null;
+    const txSym = c => (c.startsWith('5') ? 'sh' : 'sz') + c;
+    const fetchEast = async c => {   // 东财 hfq + 最新真实价
+      const k = async fqt => {
+        const u = `https://push2his.eastmoney.com/api/qt/stock/kline/get?fields1=f1,f2&fields2=f51,f52,f53&klt=101&fqt=${fqt}&secid=${secid(c)}&beg=0&end=20500101&ut=7eea3edcaed734bea9cbfc24409ed989`;
+        const j = await (await fetch(u)).json();
+        return j.data && j.data.klines ? j.data.klines.map(x => x.split(',')) : null;
+      };
+      const hfq = await k(2); if (!hfq) return null;
+      const raw = await k(0);
+      return { dates: hfq.map(x => x[0]), close: hfq.map(x => +x[2]),
+        open: hfq.map(x => +x[1]), rawLast: raw ? +raw[raw.length-1][2] : null };
     };
-    const fetched = {};  // code -> {dates:[], close:[], open:[], rawLast}
-    for (const c of D.codes) {
-      const hfq = await fetchK(c, 2); if (!hfq) throw new Error(c + ' 拉取失败');
-      const raw = await fetchK(c, 0);
-      fetched[c] = { dates: hfq.map(x => x[0]), close: hfq.map(x => +x[2]),
-        open: hfq.map(x => +x[1]), rawLast: raw ? +raw[raw.length-1][2] : D.rawLast[c] };
-      await new Promise(r => setTimeout(r, 250));
+    const fetchTx = async c => {     // 腾讯兜底（hfq + 最新真实价）
+      const k = async fq => {
+        const u = `https://ifzq.gtimg.cn/appstock/app/fqkline/get?param=${txSym(c)},day,,,900,${fq}`;
+        const j = await (await fetch(u)).json();
+        const node = j.data && j.data[txSym(c)];
+        if (!node) return null;
+        // 有分红调整的代码在 hfqday，从未分红的退回 day（两者即同值）
+        const arr = fq === 'hfq' ? (node.hfqday || node.day) : node.day;
+        return arr ? arr.filter(x => typeof x[0] === 'string') : null;
+      };
+      let hfq = await k('hfq');
+      if (!hfq) return null;
+      const raw = await k('');
+      return { dates: hfq.map(x => x[0]), close: hfq.map(x => +x[2]),
+        open: hfq.map(x => +x[1]), rawLast: raw ? +raw[raw.length-1][2] : null };
+    };
+    // 先整批走东财，任一失败则整批切腾讯（避免两家的后复权锚点混用污染动量）
+    let fetched = null, src = '';
+    try {
+      fetched = {};
+      for (const c of D.codes) {
+        fetched[c] = await fetchEast(c); if (!fetched[c]) throw new Error('east incomplete');
+        await new Promise(r => setTimeout(r, 250));
+      }
+      src = '东财';
+    } catch (e) {
+      fetched = {};
+      for (const c of D.codes) {
+        fetched[c] = await fetchTx(c); if (!fetched[c]) throw new Error('腾讯源也不可用');
+        await new Promise(r => setTimeout(r, 250));
+      }
+      src = '腾讯';
     }
     // 重建并集日历，逐代码对齐（缺的日期填 null）
-    const union = [...new Set(Object.values(fetched).flatMap(f => f.dates))].sort();
-    const align = arr => {
-      const m = new Map(arr.dates.map((d, k) => [d, k]));
-      return union.map(d => (m.has(d) ? arr.close[m.get(d)] : null));
-    };
-    const alignOpen = arr => {
-      const m = new Map(arr.dates.map((d, k) => [d, k]));
-      return union.map(d => (m.has(d) ? arr.open[m.get(d)] : null));
-    };
-    D.dates = union;
+    const union = [...new Set([...D.dates, ...Object.values(fetched).flatMap(f => f.dates)])].sort();
     for (const c of D.codes) {
-      D.close[c] = align(fetched[c]).map(v => v == null ? null : +v.toFixed(3));
-      D.open[c] = alignOpen(fetched[c]).map(v => v == null ? null : +v.toFixed(3));
-      D.rawLast[c] = +fetched[c].rawLast.toFixed(3);
+      const f = fetched[c];
+      const fIdx = new Map(f.dates.map((d, k) => [d, k]));
+      // 锚点换算：保留拉取段（最新源锚点），旧段按重叠日换算到同一锚点续接
+      const firstCommon = f.dates.find(d => D.dates.includes(d));
+      let ratio = 1;
+      if (firstCommon) {
+        const bIdx = D.dates.indexOf(firstCommon), fIdx0 = fIdx.get(firstCommon);
+        // ratio = 新锚/旧锚（旧段 × ratio 后与新段同锚）
+        if (D.close[c][bIdx] != null && f.close[fIdx0]) ratio = f.close[fIdx0] / D.close[c][bIdx];
+      }
+      const bMap = new Map(D.dates.map((d, k) => [d, k]));
+      const nc = [], no = [];
+      for (const d of union) {
+        let cv = null, ov = null;
+        if (fIdx.has(d)) { cv = f.close[fIdx.get(d)]; ov = f.open[fIdx.get(d)]; }
+        else if (bMap.has(d) && (!firstCommon || d < firstCommon)) {
+          const k = bMap.get(d);
+          cv = D.close[c][k] == null ? null : D.close[c][k] * ratio;
+          ov = D.open[c][k] == null ? null : D.open[c][k] * ratio;
+        }
+        nc.push(cv == null ? null : +cv.toFixed(3)); no.push(ov == null ? null : +ov.toFixed(3));
+      }
+      D.close[c] = nc; D.open[c] = no;
+      if (f.rawLast != null) D.rawLast[c] = +f.rawLast.toFixed(3);
     }
+    D.dates = union;
     D.asOf = union[union.length - 1];
     $('asOfTag').textContent = '数据截至 ' + D.asOf;
     renderAll();
-    toast('已更新至 ' + D.asOf + '（' + D.codes.length + ' 只）');
+    toast('已更新至 ' + D.asOf + '（' + D.codes.length + ' 只，' + src + '）');
   } catch (e) {
     toast('在线更新不可用（' + e.message + '），使用内置数据截至 ' + D.asOf);
   }
