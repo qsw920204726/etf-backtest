@@ -18,12 +18,14 @@ class MomentumRotation(Strategy):
         freq: str = "W",          # 'M' 月末调仓 / 'W' 每周最后一个交易日
         abs_filter: bool = True,  # 绝对动量过滤：无正动量标的则持币
         risk_adjusted: bool = True,  # 动量分 = 收益/波动(夏普式)；扫描显示 OOS 显著更稳
+        weighting: str = "equal",    # equal 等权 / vol_inverse 波动率倒数(回撤更浅夏普更高)
     ):
         self.top_n = top_n
         self.lookback = lookback
         self.freq = freq
         self.abs_filter = abs_filter
         self.risk_adjusted = risk_adjusted
+        self.weighting = weighting
 
     def prepare(self, close) -> None:
         super().prepare(close)
@@ -45,6 +47,15 @@ class MomentumRotation(Strategy):
             return {}  # 全场无正动量 → 清仓持币
 
         selected = [c for c, _, _ in momentum[: self.top_n]]
+
+        if self.weighting == "vol_inverse":
+            # 波动率倒数加权（简化风险平价）：稳的多配、颠的少配
+            window = self.close.loc[:date].iloc[-(self.lookback + 1):]
+            vol = window.iloc[1:].pct_change().std()
+            inv = {c: 1.0 / vol[c] for c in selected if vol[c] > 0}
+            total = sum(inv.values())
+            if total > 0:
+                return {c: v / total for c, v in inv.items()}
         weight = 1.0 / len(selected)
         return {code: weight for code in selected}
 

@@ -54,13 +54,15 @@ def refresh_data():
 
 @app.get("/api/signal")
 def signal(top_n: int = 3, lookback: int = 20, freq: str = "W",
-           abs_filter: bool = True, risk_adjusted: bool = True):
+           abs_filter: bool = True, risk_adjusted: bool = True,
+           weighting: str = "equal"):
     """按当前参数给出最新交易日的操作信号"""
     if not _data:
         raise HTTPException(503, "数据未加载")
     strategy = MomentumRotation(
         top_n=top_n, lookback=lookback, freq=freq,
         abs_filter=abs_filter, risk_adjusted=risk_adjusted,
+        weighting=weighting,
     )
     strategy.prepare(CLOSE)
     today = CLOSE.index[-1]
@@ -178,6 +180,7 @@ class BacktestRequest(BaseModel):
     freq: str = "W"          # M 月末 / W 每周
     abs_filter: bool = True  # 绝对动量过滤
     risk_adjusted: bool = True  # 风险调整动量（收益/波动）
+    weighting: str = "equal"    # equal 等权 / vol_inverse 波动率倒数
     start: str = "2015-01-01"
     end: str = "2099-12-31"
     initial_cash: float = 100_000.0
@@ -203,6 +206,7 @@ def backtest(req: BacktestRequest):
         freq=req.freq,
         abs_filter=req.abs_filter,
         risk_adjusted=req.risk_adjusted,
+        weighting=req.weighting,
     )
     config = BacktestConfig(
         initial_cash=req.initial_cash,

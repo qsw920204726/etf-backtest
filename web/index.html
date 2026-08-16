@@ -143,6 +143,9 @@
     <label>风险调整动量
       <select id="riskAdj"><option value="0">关(收益率)</option><option value="1" selected>开(收益/波动)</option></select>
     </label>
+    <label>加权方式
+      <select id="weighting"><option value="equal" selected>等权</option><option value="vol_inverse">波动率倒数</option></select>
+    </label>
     <label class="check"><input id="absFilter" type="checkbox" checked>绝对动量过滤</label>
     <label>开始<input id="start" type="date" value="2015-01-01"></label>
     <label>结束<input id="end" type="date"></label>
@@ -268,10 +271,11 @@ const charts = {};
 // ---------- 回测请求 ----------
 async function runBacktest() {
   const body = {
-    top_n: +document.getElementById('topN').value || 2,
+    top_n: +document.getElementById('topN').value || 3,
     lookback: +document.getElementById('lookback').value || 60,
     freq: document.getElementById('freq').value,
     risk_adjusted: document.getElementById('riskAdj').value === '1',
+    weighting: document.getElementById('weighting').value,
     abs_filter: document.getElementById('absFilter').checked,
     start: document.getElementById('start').value || '2015-01-01',
     end: document.getElementById('end').value || '2099-12-31',
@@ -376,11 +380,12 @@ function renderSignalTable() {
 
 async function loadSignal() {
   const body = [
-    ['top_n', document.getElementById('topN').value || 2],
+    ['top_n', document.getElementById('topN').value || 3],
     ['lookback', document.getElementById('lookback').value || 20],
     ['freq', document.getElementById('freq').value],
     ['abs_filter', document.getElementById('absFilter').checked],
     ['risk_adjusted', document.getElementById('riskAdj').value === '1'],
+    ['weighting', document.getElementById('weighting').value],
   ].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
   document.getElementById('signalTable').classList.add('loading');
   try {

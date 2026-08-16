@@ -80,6 +80,7 @@
       <label>动量窗口(日)<input id="lookback" type="number" value="20" min="5" max="250"></label>
       <label>频率<select id="freq"><option value="W" selected>每周</option><option value="M">月末</option></select></label>
       <label>风险调整<select id="riskAdj"><option value="1" selected>开</option><option value="0">关</option></select></label>
+      <label>加权方式<select id="weighting"><option value="equal" selected>等权</option><option value="vol_inverse">波动率倒数</option></select></label>
       <label>开始<input id="start" type="date" value="2015-01-01"></label>
       <label>资金(万)<input id="cashW" type="number" value="10" min="1"></label>
       <label class="wide"><input id="absF" type="checkbox" checked>绝对动量过滤（全场无正动量→持币）</label>
@@ -155,10 +156,11 @@ function momentumAt(i, lookback, riskAdj) {
       for (let k = i - lookback + 1; k <= i; k++) {
         const r = cl[k] / cl[k-1] - 1; s += r; s2 += r*r; n++;
       }
-      const std = Math.sqrt(Math.max(s2/n - (s/n)*(s/n), 0)) * Math.sqrt(lookback);
+      const stdDaily = Math.sqrt(Math.max(s2/n - (s/n)*(s/n), 0));
+      const std = stdDaily * Math.sqrt(lookback);
       if (!(std > 0)) continue;
-      out.push([c, ret / std]);
-    } else out.push([c, ret]);
+      out.push([c, ret / std, ret, stdDaily]);
+    } else out.push([c, ret, ret, null]);
   }
   out.sort((a, b) => b[1] - a[1]);
   return out;
@@ -168,7 +170,14 @@ function targetsAt(i, P) {
   const mom = momentumAt(i, P.lookback, P.riskAdj);
   if (!mom.length) return {};
   if (P.absFilter && mom[0][1] <= 0) return {};
-  return mom.slice(0, P.topN).reduce((m, x) => (m[x[0]] = 1 / Math.min(P.topN, mom.length), m), {});
+  const sel = mom.slice(0, P.topN);
+  if (P.weighting === 'vol_inverse' && sel.every(x => x[3] > 0)) {
+    const inv = sel.map(x => 1 / x[3]);
+    const sum = inv.reduce((a, b) => a + b, 0);
+    return sel.reduce((m, x, k) => (m[x[0]] = inv[k] / sum, m), {});
+  }
+  const w = 1 / sel.length;
+  return sel.reduce((m, x) => (m[x[0]] = w, m), {});
 }
 function runBacktest(P) {
   const s0 = D.dates.indexOf(D.dates.find(d => d >= P.start));
@@ -306,6 +315,7 @@ function nextRebalance() {
 function getParams() {
   return { topN: +$('topN').value || 3, lookback: +$('lookback').value || 20,
     freq: $('freq').value, riskAdj: $('riskAdj').value === '1',
+    weighting: $('weighting').value,
     absFilter: $('absF').checked, start: $('start').value || '2015-01-01',
     cash: (+$('cashW').value || 10) * 10000,
     commRate: 0.00025, minComm: 0, slippage: 0,
