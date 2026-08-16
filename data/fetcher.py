@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import akshare as ak
+import requests
 
 # 东财/新浪接口是纯国内源，走系统代理(Clash 等)常被断连；对这些域名强制直连
 os.environ["NO_PROXY"] = (
@@ -138,6 +139,75 @@ def fetch_one(code: str, refresh: bool = False, adjust: str = "hfq",
     CACHE_DIR.mkdir(exist_ok=True)
     df.to_parquet(cache_file)
     return df
+
+
+def fetch_nav(code: str, refresh: bool = False) -> pd.DataFrame:
+    """拉取 ETF 历史单位净值（天天基金 pingzhongdata），用于溢价率过滤。"""
+    import json
+    import re
+
+    cache_file = CACHE_DIR / f"{code}_nav.parquet"
+    if cache_file.exists() and not refresh:
+        old = pd.read_parquet(cache_file)
+        if not old.empty:
+            return old
+
+    url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js"
+    r = requests.get(url, headers={
+        "Referer": f"http://fundf10.eastmoney.com/jjjz_{code}.html",
+        "User-Agent": "Mozilla/5.0",
+    }, timeout=15)
+    m = re.search(r"Data_netWorthTrend\s*=\s*(\[.*?\]);", r.text)
+    if not m:
+        return pd.DataFrame()
+    arr = json.loads(m.group(1))
+    df = pd.DataFrame(
+        {"nav": [x["y"] for x in arr]},
+        index=pd.to_datetime([x["x"] for x in arr], unit="ms").normalize(),
+    )
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    if cache_file.exists():
+        prev = pd.read_parquet(cache_file)
+        if not prev.empty:
+            df = pd.concat([prev, df])
+            df = df[~df.index.duplicated(keep="last")]
+    CACHE_DIR.mkdir(exist_ok=True)
+    df.to_parquet(cache_file)
+    return df
+
+
+def load_navs(refresh: bool = False) -> dict[str, pd.DataFrame]:
+    """全池净值。溢价率 = 真实价/单位净值 - 1"""
+    out = {}
+    for code in UNIVERSE:
+        try:
+            df = fetch_nav(code, refresh=refresh)
+            if not df.empty:
+                out[code] = df
+        except Exception:
+            continue
+    return out
+
+
+def build_aux_panels(
+    data: dict[str, pd.DataFrame], raw: dict[str, pd.DataFrame],
+    navs: dict[str, pd.DataFrame],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """构建溢价率面板与成交额面板（对齐 hfq 主日历）。"""
+    codes = [c for c in data if c in raw and c in navs]
+    idx = None
+    for c in data:
+        idx = data[c].index if idx is None else idx.union(data[c].index)
+    prem = pd.DataFrame(
+        {c: raw[c]["close"].reindex(idx).ffill()
+              / navs[c]["nav"].reindex(idx).ffill() - 1 for c in codes},
+        index=idx,
+    ).sort_index()
+    amt = pd.DataFrame(
+        {c: data[c]["amount"].reindex(idx) for c in data},
+        index=idx,
+    ).sort_index()
+    return prem, amt
 
 
 def load_all(refresh: bool = False, quiet: bool = False, adjust: str = "hfq",

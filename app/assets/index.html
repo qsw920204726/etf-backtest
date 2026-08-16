@@ -69,8 +69,8 @@
   <div class="card">
     <h2>轮动依据 · 动量排名</h2>
     <div class="sub" id="rankSub">动量分 = 近N日涨幅/波动，前N名持有</div>
-    <table><thead><tr><th>#</th><th>ETF</th><th>动量分</th><th>涨幅</th><th>状态</th></tr></thead>
-      <tbody id="rankBody"><tr><td colspan="5" style="text-align:center;color:var(--tm)">计算中…</td></tr></tbody></table>
+    <table><thead><tr><th>#</th><th>ETF</th><th>动量分</th><th>涨幅</th><th>溢价</th><th>状态</th></tr></thead>
+      <tbody id="rankBody"><tr><td colspan="6" style="text-align:center;color:var(--tm)">计算中…</td></tr></tbody></table>
   </div>
 
   <div class="card">
@@ -84,6 +84,7 @@
       <label>开始<input id="start" type="date" value="2015-01-01"></label>
       <label>资金(万)<input id="cashW" type="number" value="10" min="1"></label>
       <label class="wide"><input id="absF" type="checkbox" checked>绝对动量过滤（全场无正动量→持币）</label>
+      <label class="wide"><input id="premF" type="checkbox" checked>溢价过滤（溢价&gt;3%剔除，防QDII高溢价）</label>
     </div>
     <div class="btnrow">
       <button id="runBtn">运行回测</button>
@@ -142,8 +143,24 @@ function isoWeek(dt) { // ISO 周号（周一为一周之始）
   const y0 = new Date(Date.UTC(d.getUTCFullYear(),0,1));
   return Math.ceil((((d - y0) / 864e5) + 1) / 7);
 }
-function momentumAt(i, lookback, riskAdj) {
+function premiumAt(c, i) {
+  const rc = D.rawClose && D.rawClose[c], nv = D.nav && D.nav[c];
+  if (!rc || !nv || rc[i] == null || nv[i] == null || !(nv[i] > 0)) return null;
+  return rc[i] / nv[i] - 1;
+}
+function momentumAt(i, lookback, riskAdj, volumeBoost) {
   const out = [];
+  // 量能趋势: 成交额20日均/60日均(前移20日)，裁剪[0.5,1.5]
+  const amtRatio = {};
+  if (volumeBoost && D.amount) {
+    for (const c of D.codes) {
+      const a = D.amount[c]; if (!a) continue;
+      let s20 = 0, n20 = 0, s60 = 0, n60 = 0;
+      for (let k = i - 19; k <= i; k++) if (a[k] != null) { s20 += a[k]; n20++; }
+      for (let k = i - 79; k <= i - 20; k++) if (a[k] != null) { s60 += a[k]; n60++; }
+      if (n20 >= 10 && n60 >= 30 && s60 > 0) amtRatio[c] = Math.min(Math.max((s20/n20)/(s60/n60), 0.5), 1.5);
+    }
+  }
   for (const c of D.codes) {
     const cl = D.close[c];
     if (cl[i] == null || cl[i - lookback] == null) continue;
@@ -151,6 +168,7 @@ function momentumAt(i, lookback, riskAdj) {
     for (let k = i - lookback; k <= i; k++) if (cl[k] == null) { ok = false; break; }
     if (!ok) continue;
     const ret = cl[i] / cl[i - lookback] - 1;
+    let score;
     if (riskAdj) {
       let s = 0, s2 = 0, n = 0;
       for (let k = i - lookback + 1; k <= i; k++) {
@@ -159,22 +177,37 @@ function momentumAt(i, lookback, riskAdj) {
       const stdDaily = Math.sqrt(Math.max(s2/n - (s/n)*(s/n), 0));
       const std = stdDaily * Math.sqrt(lookback);
       if (!(std > 0)) continue;
-      out.push([c, ret / std, ret, stdDaily]);
-    } else out.push([c, ret, ret, null]);
+      score = ret / std;
+    } else score = ret;
+    if (amtRatio[c] != null) score = score * (1 + 0.5 * (amtRatio[c] - 1));
+    out.push([c, score, ret, null]);
   }
   out.sort((a, b) => b[1] - a[1]);
   return out;
 }
 function targetsAt(i, P) {
   if (!P.rbDates.has(i)) return null;
-  const mom = momentumAt(i, P.lookback, P.riskAdj);
+  let mom = momentumAt(i, P.lookback, P.riskAdj, true);
+  // 溢价过滤：溢价率超阈值的候选剔除（无溢价数据不过滤）
+  if (P.premiumCap > 0) {
+    mom = mom.filter(x => { const p = premiumAt(x[0], i); return p == null || p <= P.premiumCap; });
+  }
   if (!mom.length) return {};
   if (P.absFilter && mom[0][1] <= 0) return {};
   const sel = mom.slice(0, P.topN);
-  if (P.weighting === 'vol_inverse' && sel.every(x => x[3] > 0)) {
-    const inv = sel.map(x => 1 / x[3]);
+  if (P.weighting === 'vol_inverse') {
+    // 日波动率倒数加权（简化风险平价）
+    const inv = sel.map(([c]) => {
+      const cl = D.close[c]; let s = 0, s2 = 0, n = 0;
+      for (let k = P.lookback; k >= 1; k--) {
+        if (cl[i-k] == null || cl[i-k+1] == null) continue;
+        const r = cl[i-k+1] / cl[i-k] - 1; s += r; s2 += r*r; n++;
+      }
+      const v = Math.sqrt(Math.max(s2/n - (s/n)*(s/n), 0));
+      return v > 0 ? 1 / v : 0;
+    });
     const sum = inv.reduce((a, b) => a + b, 0);
-    return sel.reduce((m, x, k) => (m[x[0]] = inv[k] / sum, m), {});
+    if (sum > 0) return sel.reduce((m, x, k) => (m[x[0]] = inv[k] / sum, m), {});
   }
   const w = 1 / sel.length;
   return sel.reduce((m, x) => (m[x[0]] = w, m), {});
@@ -316,7 +349,8 @@ function getParams() {
   return { topN: +$('topN').value || 3, lookback: +$('lookback').value || 20,
     freq: $('freq').value, riskAdj: $('riskAdj').value === '1',
     weighting: $('weighting').value,
-    absFilter: $('absF').checked, start: $('start').value || '2015-01-01',
+    absFilter: $('absF').checked, premiumCap: $('premF').checked ? 0.03 : 0,
+    start: $('start').value || '2015-01-01',
     cash: (+$('cashW').value || 10) * 10000,
     commRate: 0.00025, minComm: 0, slippage: 0,
     rbDates: rebalanceDates($('freq').value) };
@@ -330,20 +364,23 @@ function renderSignal() {
 
   // 轮动依据排名（同一次计算）
   const rb = $('rankBody'); rb.textContent = '';
-  const mom = momentumAt(s.today, P.lookback, P.riskAdj);
+  const mom = momentumAt(s.today, P.lookback, P.riskAdj, true);
   const selCodes = new Set(s.cur ? Object.keys(s.cur) : []);
   mom.forEach(([c, score], i) => {
-    let ret = null, n = 0;
+    let ret = null;
     const cl = D.close[c];
-    for (let k = s.today - P.lookback; k <= s.today; k++) if (cl[k] != null) n++;
     if (cl[s.today] != null && cl[s.today - P.lookback] != null)
       ret = cl[s.today] / cl[s.today - P.lookback] - 1;
+    const p = premiumAt(c, s.today);
+    const blocked = p != null && P.premiumCap > 0 && p > P.premiumCap;
     const tr = document.createElement('tr');
     [String(i+1), D.names[c]+' '+c, score.toFixed(2), ret==null?'—':(ret*100).toFixed(1)+'%',
-     selCodes.has(c) ? '✓持有' : '']
+     p == null ? '—' : (p*100).toFixed(1)+'%',
+     selCodes.has(c) ? '✓持有' : (blocked ? '溢价剔除' : '')]
       .forEach((v, k) => { const td = document.createElement('td'); td.textContent = v;
         if (k >= 2) td.className = 'num'; tr.appendChild(td); });
     if (selCodes.has(c)) tr.style.background = 'color-mix(in srgb, var(--good) 9%, transparent)';
+    else if (blocked) tr.style.color = 'var(--bad)';
     rb.appendChild(tr);
   });
   $('rankSub').textContent = `动量分 = 近${P.lookback}日涨幅/波动 · ${D.dates[s.today]} 计算`;
@@ -361,7 +398,7 @@ function renderSignal() {
     for (const c of [...oldC].filter(c => !newC.has(c)).sort())
       rows.push(['sell', D.names[c]+' '+c, '—', ref(c), '全部持仓']);
     for (const c of [...oldC].filter(c => newC.has(c)) .sort())
-      rows.push(['keep', D.names[c]+' '+c, Math.round(s.cur[c]*100)+'%', ref(c), '不动']);
+      rows.push(['keep', D.names[c]+' '+c, Math.round(s.cur[c]*100)+'%', ref(c), shareRow(c)]);
     for (const c of [...newC].filter(c => !oldC.has(c)).sort())
       rows.push(['buy', D.names[c]+' '+c, Math.round(s.cur[c]*100)+'%', ref(c), shareRow(c)]);
   } else if (s.cur) {
@@ -383,7 +420,7 @@ function renderSignal() {
     tbody.appendChild(tr);
   }
   $('sigSub').textContent = `数据截至 ${D.asOf}` + (s.isRB ? ' · 今日为调仓日，次日开盘执行' : ` · 非调仓日，维持持仓（${D.dates[s.sd]} 确立）`);
-  $('sigNote').textContent = s.isRB ? '先卖后买 · 100股取整 · 限价单贴盘口'
+  $('sigNote').textContent = s.isRB ? '先卖后买 · 100股取整 · 限价贴盘口 · 持有行份额=目标仓位，接近则不动'
     : `下一次调仓日：${nextRebalance()}（周五收盘后看新信号）`;
 }
 let CHARTS = {};
@@ -507,6 +544,20 @@ $('refreshBtn').onclick = async () => {
     }
     // 重建并集日历，逐代码对齐（缺的日期填 null）
     const union = [...new Set([...D.dates, ...Object.values(fetched).flatMap(f => f.dates)])].sort();
+    // 辅助序列(净值/真实价/成交额)重映射到新日历：新日期用前值延续（净值本就滞后一日）
+    const oldPos = new Map(D.dates.map((d, k) => [d, k]));
+    for (const key of ['rawClose', 'nav', 'amount']) {
+      if (!D[key]) continue;
+      for (const c of Object.keys(D[key])) {
+        const old = D[key][c]; const nv = []; let last = null;
+        for (const d of union) {
+          const k = oldPos.get(d);
+          if (k != null && old[k] != null) last = old[k];
+          nv.push(last);
+        }
+        D[key][c] = nv;
+      }
+    }
     for (const c of D.codes) {
       const f = fetched[c];
       const fIdx = new Map(f.dates.map((d, k) => [d, k]));

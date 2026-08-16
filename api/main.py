@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from data.fetcher import build_exec_panels, build_panels, load_all
+from data.fetcher import build_aux_panels, build_exec_panels, build_panels, load_all, load_navs
 from data.universe import BENCHMARK, UNIVERSE
 from engine.broker import BrokerConfig
 from engine.engine import BacktestConfig, run
@@ -32,12 +32,24 @@ if not _data:  # 缓存全空（首次安装）才联网
 CLOSE, OPEN = build_panels(_data) if _data else (None, None)
 _raw = load_all(quiet=True, adjust="", local_only=True)
 CLOSE_RAW, OPEN_RAW = build_exec_panels(_data, _raw)
+_navs = load_navs()  # 净值只有全量接口，本地缓存秒读
+PREM, AMT = build_aux_panels(_data, _raw, _navs) if (_data and _raw and _navs) else (None, None)
+
+
+def _strategy(top_n, lookback, freq, abs_filter, risk_adjusted, weighting,
+              premium_cap=0.03, volume_boost=True):
+    return MomentumRotation(
+        top_n=top_n, lookback=lookback, freq=freq,
+        abs_filter=abs_filter, risk_adjusted=risk_adjusted,
+        weighting=weighting, premium_cap=premium_cap, volume_boost=volume_boost,
+        premium=PREM, amount=AMT,
+    )
 
 
 @app.post("/api/refresh")
 def refresh_data():
     """增量更新全部 ETF 行情并重建面板"""
-    global _data, CLOSE, OPEN, _raw, CLOSE_RAW, OPEN_RAW
+    global _data, CLOSE, OPEN, _raw, CLOSE_RAW, OPEN_RAW, _navs, PREM, AMT
     new_data = load_all(quiet=True)
     if not new_data:
         raise HTTPException(503, "数据更新失败（网络不可用且无本地缓存）")
@@ -45,6 +57,8 @@ def refresh_data():
     CLOSE, OPEN = build_panels(_data)
     _raw = load_all(quiet=True, adjust="")
     CLOSE_RAW, OPEN_RAW = build_exec_panels(_data, _raw)
+    _navs = load_navs()
+    PREM, AMT = build_aux_panels(_data, _raw, _navs) if (_data and _raw and _navs) else (None, None)
     return {
         "updated": len(_data),
         "last_date": str(CLOSE.index[-1].date()),
@@ -55,15 +69,13 @@ def refresh_data():
 @app.get("/api/signal")
 def signal(top_n: int = 3, lookback: int = 20, freq: str = "W",
            abs_filter: bool = True, risk_adjusted: bool = True,
-           weighting: str = "equal"):
+           weighting: str = "equal", premium_cap: float = 0.03,
+           volume_boost: bool = True):
     """按当前参数给出最新交易日的操作信号"""
     if not _data:
         raise HTTPException(503, "数据未加载")
-    strategy = MomentumRotation(
-        top_n=top_n, lookback=lookback, freq=freq,
-        abs_filter=abs_filter, risk_adjusted=risk_adjusted,
-        weighting=weighting,
-    )
+    strategy = _strategy(top_n, lookback, freq, abs_filter, risk_adjusted,
+                         weighting, premium_cap, volume_boost)
     strategy.prepare(CLOSE)
     today = CLOSE.index[-1]
     name_of = {c: i["name"] for c, i in UNIVERSE.items()}
@@ -125,14 +137,16 @@ def signal(top_n: int = 3, lookback: int = 20, freq: str = "W",
     ranking = None
     if signal_date is not None:
         sel = set(targets) if targets else set()
-        ranking = [
-            {
+        ranking = []
+        for c, s, r in strategy.scores(signal_date):
+            p = strategy.premium_at(signal_date, c)
+            ranking.append({
                 "code": c, "name": name_of.get(c, ""),
                 "score": round(s, 3), "ret": round(r, 4),
+                "premium": round(p, 4) if p == p else None,
+                "premium_blocked": strategy.premium_blocked(signal_date, c),
                 "selected": c in sel,
-            }
-            for c, s, r in strategy.scores(signal_date)
-        ]
+            })
 
     return {
         "as_of": str(today.date()),
@@ -181,6 +195,8 @@ class BacktestRequest(BaseModel):
     abs_filter: bool = True  # 绝对动量过滤
     risk_adjusted: bool = True  # 风险调整动量（收益/波动）
     weighting: str = "equal"    # equal 等权 / vol_inverse 波动率倒数
+    premium_cap: float | None = 0.03  # 溢价过滤阈值，None/0 关闭
+    volume_boost: bool = True   # 量能加成
     start: str = "2015-01-01"
     end: str = "2099-12-31"
     initial_cash: float = 100_000.0
@@ -200,14 +216,9 @@ def universe():
 def backtest(req: BacktestRequest):
     if not _data:
         raise HTTPException(503, "数据未加载：请先在项目目录跑 py run_backtest.py 拉取数据")
-    strategy = MomentumRotation(
-        top_n=req.top_n,
-        lookback=req.lookback,
-        freq=req.freq,
-        abs_filter=req.abs_filter,
-        risk_adjusted=req.risk_adjusted,
-        weighting=req.weighting,
-    )
+    strategy = _strategy(req.top_n, req.lookback, req.freq, req.abs_filter,
+                         req.risk_adjusted, req.weighting,
+                         req.premium_cap or None, req.volume_boost)
     config = BacktestConfig(
         initial_cash=req.initial_cash,
         start=req.start,

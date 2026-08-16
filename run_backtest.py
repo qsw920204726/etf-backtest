@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
 
-from data.fetcher import build_exec_panels, build_panels, load_all
+from data.fetcher import build_aux_panels, build_exec_panels, build_panels, load_all, load_navs
 from data.universe import BENCHMARK, UNIVERSE
 from engine.engine import BacktestConfig, run
 from engine.broker import BrokerConfig
@@ -32,6 +32,13 @@ def main():
     ap.add_argument("--risk-adjusted", action="store_true", default=True, help="风险调整动量(默认开)")
     ap.add_argument("--no-risk-adjusted", dest="risk_adjusted", action="store_false",
                     help="用裸收益率动量")
+    ap.add_argument("--no-premium-filter", dest="premium_cap", action="store_const",
+                    const=None, help="关闭溢价过滤")
+    ap.add_argument("--premium-cap", type=float, default=0.03,
+                    help="溢价率过滤阈值(默认3%%)")
+    ap.add_argument("--no-volume-boost", dest="volume_boost", action="store_false",
+                    help="关闭量能加成")
+    ap.set_defaults(premium_cap=0.03)
     ap.add_argument("--start", default="2015-01-01")
     ap.add_argument("--end", default="2099-12-31")
     ap.add_argument("--cash", type=float, default=100_000)
@@ -50,6 +57,10 @@ def main():
     raw = load_all(refresh=args.refresh, quiet=True, adjust="")
     exec_close, exec_open = build_exec_panels(data, raw)
     print(f"  执行价口径: {'对齐真实价' if exec_close is not None else '后复权价(真实价拉取失败,自动回退)'}")
+    navs = load_navs(refresh=args.refresh)
+    prem, amt = build_aux_panels(data, raw, navs) if navs else (None, None)
+    print(f"  溢价过滤: {'开(阈值%.0f%%)' % (args.premium_cap * 100) if prem is not None and args.premium_cap else '关'}"
+          f" | 量能加成: {'开' if args.volume_boost else '关'}")
 
     print(f"\n== 2. 回测：动量轮动 top{args.top_n} / {args.lookback}日动量 / {'月末' if args.freq == 'M' else '每周'}调仓 ==")
     strategy = MomentumRotation(
@@ -58,6 +69,10 @@ def main():
         freq=args.freq,
         abs_filter=not args.no_abs_filter,
         risk_adjusted=args.risk_adjusted,
+        premium_cap=args.premium_cap if prem is not None else None,
+        volume_boost=args.volume_boost,
+        premium=prem,
+        amount=amt,
     )
     config = BacktestConfig(
         initial_cash=args.cash,
