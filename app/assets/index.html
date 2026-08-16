@@ -67,6 +67,13 @@
   </div>
 
   <div class="card">
+    <h2>轮动依据 · 动量排名</h2>
+    <div class="sub" id="rankSub">动量分 = 近N日涨幅/波动，前N名持有</div>
+    <table><thead><tr><th>#</th><th>ETF</th><th>动量分</th><th>涨幅</th><th>状态</th></tr></thead>
+      <tbody id="rankBody"><tr><td colspan="5" style="text-align:center;color:var(--tm)">计算中…</td></tr></tbody></table>
+  </div>
+
+  <div class="card">
     <h2>回测参数</h2>
     <div class="form">
       <label>持有只数<input id="topN" type="number" value="3" min="1" max="5"></label>
@@ -310,6 +317,26 @@ function renderSignal() {
   const tbody = $('sigBody'); tbody.textContent = '';
   const cap = +$('cap').value || 100000;
   const rows = [];
+
+  // 轮动依据排名（同一次计算）
+  const rb = $('rankBody'); rb.textContent = '';
+  const mom = momentumAt(s.today, P.lookback, P.riskAdj);
+  const selCodes = new Set(s.cur ? Object.keys(s.cur) : []);
+  mom.forEach(([c, score], i) => {
+    let ret = null, n = 0;
+    const cl = D.close[c];
+    for (let k = s.today - P.lookback; k <= s.today; k++) if (cl[k] != null) n++;
+    if (cl[s.today] != null && cl[s.today - P.lookback] != null)
+      ret = cl[s.today] / cl[s.today - P.lookback] - 1;
+    const tr = document.createElement('tr');
+    [String(i+1), D.names[c]+' '+c, score.toFixed(2), ret==null?'—':(ret*100).toFixed(1)+'%',
+     selCodes.has(c) ? '✓持有' : '']
+      .forEach((v, k) => { const td = document.createElement('td'); td.textContent = v;
+        if (k >= 2) td.className = 'num'; tr.appendChild(td); });
+    if (selCodes.has(c)) tr.style.background = 'color-mix(in srgb, var(--good) 9%, transparent)';
+    rb.appendChild(tr);
+  });
+  $('rankSub').textContent = `动量分 = 近${P.lookback}日涨幅/波动 · ${D.dates[s.today]} 计算`;
   if (s.isRB && s.cur && Object.keys(s.cur).length === 0) {
     rows.push(['clear', '全部持仓', '持币', '—', '全部卖出']);
   } else if (s.isRB && s.cur) {

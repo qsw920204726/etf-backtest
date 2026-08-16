@@ -119,11 +119,25 @@ def signal(top_n: int = 3, lookback: int = 20, freq: str = "W",
             "buy": [_with_price(c, targets[c]) for c in sorted(new_codes - old_codes)],
         }
 
+    # 轮动依据：全池动量排名（与选基同口径）
+    ranking = None
+    if signal_date is not None:
+        sel = set(targets) if targets else set()
+        ranking = [
+            {
+                "code": c, "name": name_of.get(c, ""),
+                "score": round(s, 3), "ret": round(r, 4),
+                "selected": c in sel,
+            }
+            for c, s, r in strategy.scores(signal_date)
+        ]
+
     return {
         "as_of": str(today.date()),
         "action": action,          # rebalance 次日调仓 / hold 维持 / cash 次日清仓
         "holdings": holdings,
         "diff": diff,
+        "ranking": ranking,
         "last_rebalance": str(signal_date.date()) if signal_date is not None else None,
         "next_rebalance": _next_rebalance(today, freq),
         "note": "信号按收盘价计算，实际操作应在次一交易日开盘执行",

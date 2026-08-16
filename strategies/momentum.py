@@ -38,21 +38,28 @@ class MomentumRotation(Strategy):
         if date not in self._rebalance_dates:
             return None
 
-        hist = self.close.loc[:date]
-        if len(hist) < self.lookback + 1:
-            return None
-        window = hist.iloc[-(self.lookback + 1):]
-        momentum = window.iloc[-1] / window.iloc[0] - 1
-        if self.risk_adjusted:
-            vol = window.iloc[1:].pct_change().std() * (self.lookback ** 0.5)
-            momentum = momentum / vol.replace(0, float("nan"))
-        momentum = momentum.dropna().sort_values(ascending=False)
-
-        if momentum.empty:
+        momentum = self.scores(date)
+        if not momentum:
             return {}
-        if self.abs_filter and momentum.iloc[0] <= 0:
+        if self.abs_filter and momentum[0][1] <= 0:
             return {}  # 全场无正动量 → 清仓持币
 
-        selected = momentum.head(self.top_n).index.tolist()
+        selected = [c for c, _, _ in momentum[: self.top_n]]
         weight = 1.0 / len(selected)
         return {code: weight for code in selected}
+
+    def scores(self, date) -> list[tuple[str, float, float]]:
+        """动量排名：[(code, 动量分, 区间涨幅)] 按分数降序。on_bar 与此同口径。"""
+        hist = self.close.loc[:date]
+        if len(hist) < self.lookback + 1:
+            return []
+        window = hist.iloc[-(self.lookback + 1):]
+        ret = window.iloc[-1] / window.iloc[0] - 1
+        if self.risk_adjusted:
+            vol = window.iloc[1:].pct_change().std() * (self.lookback ** 0.5)
+            score = ret / vol.replace(0, float("nan"))
+        else:
+            score = ret
+        df = pd.DataFrame({"score": score, "ret": ret}).dropna()
+        df = df.sort_values("score", ascending=False)
+        return [(code, float(row.score), float(row.ret)) for code, row in df.iterrows()]
