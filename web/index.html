@@ -439,24 +439,34 @@ function renderRanking() {
 }
 
 // ---------- 更新数据 ----------
-document.getElementById('refreshBtn').onclick = async () => {
+async function refreshData(silent) {
   const btn = document.getElementById('refreshBtn');
   const status = document.getElementById('status');
-  btn.disabled = true; status.textContent = '正在更新行情数据…';
+  btn.disabled = true;
+  if (!silent) status.textContent = '正在更新行情数据…';
+  else status.textContent = '后台更新数据中…';
   try {
     const res = await fetch('/api/refresh', { method: 'POST' });
     if (!res.ok) throw new Error((await res.json()).detail || res.status);
     const r = await res.json();
     status.textContent = `已更新 ${r.updated} 只 ETF（截至 ${r.last_date}）`;
+    localStorage.setItem('lastAutoRefresh', String(Date.now()));
     await runBacktest();
     await loadSignal();
   } catch (e) {
-    status.textContent = '更新失败: ' + e.message;
+    status.textContent = silent ? '' : '更新失败: ' + e.message;
   } finally {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 5000);
   }
-};
+}
+document.getElementById('refreshBtn').onclick = () => refreshData(false);
+// 启动自动更新：30分钟内打开过则跳过，失败静默（页面先用缓存渲染）
+function autoRefreshOnOpen() {
+  const last = +localStorage.getItem('lastAutoRefresh') || 0;
+  if (Date.now() - last < 30 * 60 * 1000) return;
+  refreshData(true);
+}
 
 // ---------- KPI ----------
 function setTile(id, text) { document.getElementById(id).textContent = text; }
@@ -671,6 +681,7 @@ function renderTrades() {
 
 window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
 runBacktest();  // 首次自动运行（信号卡片随之刷新）
+autoRefreshOnOpen();  // 打开页面后台自动更新数据，完成后自动重跑
 </script>
 </body>
 </html>

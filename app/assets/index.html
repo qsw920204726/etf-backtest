@@ -493,8 +493,11 @@ $('runBtn').onclick = renderAll;
 $('cap').addEventListener('input', renderSignal);
 
 // ============ 在线更新（东财直连，失败则保留快照） ============
-$('refreshBtn').onclick = async () => {
-  toast('正在更新数据…', 10000);
+let _refreshing = false;
+async function doRefresh(silent) {
+  if (_refreshing) return;
+  _refreshing = true;
+  if (!silent) toast('正在更新数据…', 10000);
   try {
     const secid = c => (c.startsWith('5') ? '1.' : '0.') + c;
     const txSym = c => (c.startsWith('5') ? 'sh' : 'sz') + c;
@@ -607,15 +610,27 @@ $('refreshBtn').onclick = async () => {
     D.asOf = union[union.length - 1];
     $('asOfTag').textContent = '数据截至 ' + D.asOf;
     renderAll();
+    try { localStorage.setItem('lastAppRefresh', String(Date.now())); } catch (e) {}
     toast('已更新至 ' + D.asOf + '（' + D.codes.length + ' 只，' + src + '）');
   } catch (e) {
-    toast('在线更新不可用（' + e.message + '），使用内置数据截至 ' + D.asOf);
+    if (!silent) toast('在线更新不可用（' + e.message + '），使用内置数据截至 ' + D.asOf);
+  } finally {
+    _refreshing = false;
   }
-};
+}
+$('refreshBtn').onclick = () => doRefresh(false);
+// 启动自动更新：先用内置快照渲染，后台静默拉最新（6小时内不重复），成功自动重算
+function autoRefreshOnOpen() {
+  let last = 0;
+  try { last = +localStorage.getItem('lastAppRefresh') || 0; } catch (e) {}
+  if (Date.now() - last < 6 * 3600 * 1000) return;
+  doRefresh(true);
+}
 
 window.addEventListener('resize', () => Object.values(CHARTS).forEach(c => c.resize()));
 $('asOfTag').textContent = '数据截至 ' + D.asOf;
 renderAll();
+autoRefreshOnOpen();
 </script>
 </body>
 </html>
