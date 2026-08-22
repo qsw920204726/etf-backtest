@@ -542,6 +542,25 @@ $('refreshBtn').onclick = async () => {
       }
       src = '腾讯';
     }
+
+    // 净值在线刷新（天天基金，失败则沿用快照——溢价可能偏旧但不会误杀）
+    if (D.nav) {
+      try {
+        for (const c of D.codes) {
+          const t = await (await fetch(`http://fund.eastmoney.com/pingzhongdata/${c}.js`)).text();
+          const m = t.match(/Data_netWorthTrend\s*=\s*(\[.*?\]);/);
+          if (!m) continue;
+          const arr = JSON.parse(m[1]);
+          const navMap = new Map(arr.map(x => [new Date(x.x).toISOString().slice(0, 10), x.y]));
+          let last = null;
+          D.nav[c] = D.dates.map(d => {
+            if (navMap.has(d)) last = navMap.get(d);
+            return last;  // 新日期前值延续（QDII净值本就T-1）
+          });
+          await new Promise(r => setTimeout(r, 250));
+        }
+      } catch (e) { /* 保留快照净值 */ }
+    }
     // 重建并集日历，逐代码对齐（缺的日期填 null）
     const union = [...new Set([...D.dates, ...Object.values(fetched).flatMap(f => f.dates)])].sort();
     // 辅助序列(净值/真实价/成交额)重映射到新日历：新日期用前值延续（净值本就滞后一日）

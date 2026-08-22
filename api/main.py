@@ -57,7 +57,7 @@ def refresh_data():
     CLOSE, OPEN = build_panels(_data)
     _raw = load_all(quiet=True, adjust="")
     CLOSE_RAW, OPEN_RAW = build_exec_panels(_data, _raw)
-    _navs = load_navs()
+    _navs = load_navs(refresh=True)  # 净值随更新刷新（每只1个请求），防止陈旧净值虚报溢价
     PREM, AMT = build_aux_panels(_data, _raw, _navs) if (_data and _raw and _navs) else (None, None)
     return {
         "updated": len(_data),

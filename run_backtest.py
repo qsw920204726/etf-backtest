@@ -57,7 +57,7 @@ def main():
     raw = load_all(refresh=args.refresh, quiet=True, adjust="")
     exec_close, exec_open = build_exec_panels(data, raw)
     print(f"  执行价口径: {'对齐真实价' if exec_close is not None else '后复权价(真实价拉取失败,自动回退)'}")
-    navs = load_navs(refresh=args.refresh)
+    navs = load_navs(refresh=True)  # 净值每次刷新（廉价），防陈旧净值虚报溢价
     prem, amt = build_aux_panels(data, raw, navs) if navs else (None, None)
     print(f"  溢价过滤: {'开(阈值%.0f%%)' % (args.premium_cap * 100) if prem is not None and args.premium_cap else '关'}"
           f" | 量能加成: {'开' if args.volume_boost else '关'}")
